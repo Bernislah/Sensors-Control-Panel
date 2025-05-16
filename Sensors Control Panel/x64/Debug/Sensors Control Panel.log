@@ -1,0 +1,11 @@
+﻿  Sensors Control Panel.cpp
+C:\Users\stecn\source\repos\Sensors Control Panel\Sensors Control Panel\Sensors Control Panel.cpp(238,1): warning C4312: 'conversión de tipo': conversión de 'int' a 'HMENU' de mayor tamaño
+C:\Users\stecn\source\repos\Sensors Control Panel\Sensors Control Panel\Sensors Control Panel.cpp(241,1): warning C4312: 'conversión de tipo': conversión de 'int' a 'HMENU' de mayor tamaño
+C:\Users\stecn\source\repos\Sensors Control Panel\Sensors Control Panel\Sensors Control Panel.cpp(244,1): warning C4312: 'conversión de tipo': conversión de 'int' a 'HMENU' de mayor tamaño
+C:\Users\stecn\source\repos\Sensors Control Panel\Sensors Control Panel\Sensors Control Panel.cpp(1083,17): warning C4101: 'nombre': variable local sin referencia
+C:\Users\stecn\source\repos\Sensors Control Panel\Sensors Control Panel\Sensors Control Panel.cpp(1083,52): warning C4101: 'pass': variable local sin referencia
+C:\Users\stecn\source\repos\Sensors Control Panel\Sensors Control Panel\Sensors Control Panel.cpp(1083,30): warning C4101: 'host': variable local sin referencia
+C:\Users\stecn\source\repos\Sensors Control Panel\Sensors Control Panel\Sensors Control Panel.cpp(1084,14): warning C4101: 'old': variable local sin referencia
+C:\Users\stecn\source\repos\Sensors Control Panel\Sensors Control Panel\Sensors Control Panel.cpp(1083,41): warning C4101: 'user': variable local sin referencia
+C:\Users\stecn\source\repos\Sensors Control Panel\Sensors Control Panel\Sensors Control Panel.cpp(1248,35): warning C4244: 'inicializando': conversión de 'LRESULT' a 'int'; posible pérdida de datos
+  Sensors Control Panel.vcxproj -> C:\Users\stecn\source\repos\Sensors Control Panel\x64\Debug\Sensors Control Panel.exe
