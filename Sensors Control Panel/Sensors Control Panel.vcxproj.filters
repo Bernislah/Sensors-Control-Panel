@@ -27,9 +27,6 @@
     <ClInclude Include="Sensors Control Panel.h">
       <Filter>Archivos de encabezado</Filter>
     </ClInclude>
-    <ClInclude Include="libssh2_client.h">
-      <Filter>Archivos de encabezado</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Sensors Control Panel.cpp">
@@ -46,6 +43,9 @@
       <Filter>Archivos de recursos</Filter>
     </Image>
     <Image Include="Sensors Control Panel.ico">
+      <Filter>Archivos de recursos</Filter>
+    </Image>
+    <Image Include="upload.ico">
       <Filter>Archivos de recursos</Filter>
     </Image>
   </ItemGroup>

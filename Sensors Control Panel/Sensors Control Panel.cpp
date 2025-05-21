@@ -19,6 +19,11 @@
 
 #include <wininet.h>
 #pragma comment(lib, "wininet.lib")
+#include "resource.h"
+
+#include <cwctype>
+
+bool cleanLog = true;
 
 
 #define MAX_LOADSTRING 100
@@ -39,18 +44,23 @@ HFONT hFont2 = NULL;
 HWND hPanelConexiones;
 HWND hPanelControles;
 
+HICON hIconUpload = nullptr;
+
 //Variables globales para barra de progreso
 // Para el diálogo de progreso
 HWND   hProgressDlg = nullptr;
 HWND   hProgressBar = nullptr;
 
 
+//Contador general de lineas
+int nContLineas = 0;
+
 //Reutilizable de mensajes de texto:
 wchar_t questionText[256];
 wchar_t questionText2[256];
 
 //Variables para reposicionar las ventanas.
-HWND hLabel, hBtnStart, hBtnStop, hBtnRestart, hBtnUpload, hBtnChildStart, hBtnChildStop, hBtnChildSRestart, hBtnChildSStatus;
+HWND hLabel, hBtnStart, hBtnStop, hBtnRestart, hBtnUpload, hBtnChildStart, hBtnChildStop, hBtnChildSRestart, hBtnChildSStatus, hBtnChildUpload;
 HWND hWnd = NULL; // ventana principal
 bool g_enSizing = false;
 
@@ -75,14 +85,14 @@ void AplicarTemaAControles(HWND hWndParent) {
 // = = = = = = = = = = FUNCIONES TRONCALES = = = = = = = = = =
 // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
-// Elimina espacios, tabs y retornos de carro al principio y al final
-static std::wstring trim(const std::wstring& s) {
-    size_t start = s.find_first_not_of(L" \t\r\n");
+// Elimina espacios en blanco al inicio y al final de un std::wstring
+std::wstring trim(const std::wstring& str) {
+    const wchar_t* whitespace = L" \t\n\r\f\v";
+    size_t start = str.find_first_not_of(whitespace);
     if (start == std::wstring::npos) return L"";
-    size_t end = s.find_last_not_of(L" \t\r\n");
-    return s.substr(start, end - start + 1);
+    size_t end = str.find_last_not_of(whitespace);
+    return str.substr(start, end - start + 1);
 }
-
 
 //Función para contar lineas del fichero y decir las conexiones
 int ContarLineasConfig()
@@ -97,6 +107,8 @@ int ContarLineasConfig()
         if (!linea.empty()) // Opcional: ignorar líneas vacías
             contador++;
     }
+
+    nContLineas = contador;
 
     file.close();
     return contador;
@@ -160,6 +172,67 @@ Connection GetConnectionFromFile(int index) {
     return conn;
 }
 
+struct SSHResult {
+    int            exitCode;
+    std::wstring   output;
+    std::wstring   invokedCmdLine;
+};
+
+void LogSSHResult(
+    const std::wstring& fileName,
+    bool clearFile,
+    const Connection& conn,
+    const std::wstring& cmd,
+    const SSHResult& result )
+{
+    // 1) Construir ruta
+    std::wstring fullPath = rutaPrograma;
+    if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
+    fullPath += fileName;
+
+    // 2) Convertir ruta a UTF-8
+    int pathLen = WideCharToMultiByte(CP_UTF8, 0, fullPath.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string utf8Path(pathLen, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, fullPath.c_str(), -1, &utf8Path[0], pathLen, nullptr, nullptr);
+
+    // 3) Abrir el archivo
+    std::ofstream ofs;
+    if (clearFile) {
+        ofs.open(utf8Path, std::ios::binary | std::ios::trunc);
+        constexpr unsigned char bom[] = { 0xEF,0xBB,0xBF };
+        ofs.write(reinterpret_cast<const char*>(bom), sizeof(bom));
+    }
+    else {
+        ofs.open(utf8Path, std::ios::binary | std::ios::app);
+    }
+    if (!ofs) return;
+
+    // Carga OK/ERR localizados
+    wchar_t okTxt[128], errTxt[128];
+    LoadStringW(hInst, IDS_STRING_OK, okTxt, _countof(okTxt));
+    LoadStringW(hInst, IDS_STRING_ERR, errTxt, _countof(errTxt));
+
+    // 4) Construir bloque formateado
+    std::wstringstream ss;
+    ss << (result.exitCode == 0 ? okTxt : errTxt)
+        << conn.nombre << L" (" << conn.servidor << L")\n"
+        << L"  Command: " << result.invokedCmdLine << L"\n"   // línea completa
+        << L"  Exit: " << result.exitCode << L"\n"
+        << L"  Out:\n\n"
+        << L"= = = = = = = DUMP = = = = = = =\n\n"
+        << result.output << L"\n"
+        << L"= = = = = = = FIN = = = = = = =\n\n\n";
+
+    // 5) Convertir a UTF-8
+    std::wstring final = ss.str();
+    int len = WideCharToMultiByte(CP_UTF8, 0, final.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string utf8(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, final.c_str(), -1, &utf8[0], len, nullptr, nullptr);
+
+    // 6) Escribir
+    ofs.write(utf8.data(), utf8.size() - 1);
+}
+
 // Muestra un diálogo “Abrir fichero” y devuelve true si se seleccionó uno.
 // La ruta completa queda en outPath (debe reservar como wchar_t[N_MAX_PATH])
 bool SelectLocalFile(wchar_t* outPath, DWORD maxLen) {
@@ -191,6 +264,18 @@ bool SelectLocalFile(wchar_t* outPath, DWORD maxLen) {
 // = = = = = = = = = = FUNCIONES DE PENDIENTES = = = = = = = =
 // = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =
 
+
+//Prototipo del update para que lo pueda utilizar función de paneles:
+void UpdateServerStatus(HWND hParentPanel, int connIndex);
+// Prototipo del subclass proc:
+LRESULT CALLBACK PanelScrollProc(
+    HWND hwnd,
+    UINT msg,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR uIdSubclass,
+    DWORD_PTR dwRefData
+);
 
 //Función dedicada a crear paneles de conexión, espera el valor del panel que es el "padre"
 void CrearPanelesConexiones(HWND hParentPanel) {
@@ -225,6 +310,14 @@ void CrearPanelesConexiones(HWND hParentPanel) {
             hParentPanel, NULL, hInst, NULL
         );
 
+        //Establecemos que el hijo de los botones sea el SCroll
+        SetWindowSubclass(
+            hPanel,
+            PanelScrollProc,
+            IDD_CONEXION_PANEL,      // cualquier ID único, por ejemplo 1
+            (DWORD_PTR)i
+        );
+
         HWND hNombre = CreateWindowEx(
             0, L"STATIC", conn.nombre.c_str(),
             WS_VISIBLE | WS_CHILD | SS_CENTER | WS_CLIPSIBLINGS,
@@ -235,24 +328,39 @@ void CrearPanelesConexiones(HWND hParentPanel) {
 
 
         hBtnChildStart = CreateWindowW(L"BUTTON", L"Start", WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS,
-            10, 40, 60, 25, hPanel, (HMENU)(1000 + i * 10), hInst, NULL);
+            10, 40, 60, 25, hPanel, (HMENU)(3000 + i * 10), hInst, NULL);
         SendMessage(hBtnChildStart, WM_SETFONT, WPARAM(hFont), TRUE);
         hBtnChildStop = CreateWindowW(L"BUTTON", L"Stop", WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS,
-            80, 40, 60, 25, hPanel, (HMENU)(1001 + i * 10), hInst, NULL);
+            80, 40, 60, 25, hPanel, (HMENU)(3001 + i * 10), hInst, NULL);
         SendMessage(hBtnChildStop, WM_SETFONT, WPARAM(hFont), TRUE);
         hBtnChildSRestart = CreateWindowW(L"BUTTON", L"Restart", WS_VISIBLE | WS_CHILD | WS_CLIPSIBLINGS,
-            150, 40, 70, 25, hPanel, (HMENU)(1002 + i * 10), hInst, NULL);
+            150, 40, 70, 25, hPanel, (HMENU)(3002 + i * 10), hInst, NULL);
         SendMessage(hBtnChildSRestart, WM_SETFONT, WPARAM(hFont), TRUE);
 
+        hBtnChildUpload = CreateWindowW(
+            L"BUTTON", nullptr,
+            WS_VISIBLE | WS_CHILD | BS_ICON,
+            295, 43, 20, 20,
+            hPanel, (HMENU)(3003 + i * 10), hInst, NULL
+        );
+        SendMessageW(hBtnChildUpload, BM_SETIMAGE, IMAGE_ICON, (LPARAM)hIconUpload);
+
         hBtnChildSStatus = CreateWindowEx(
-            0, L"STATIC", L"ON", WS_VISIBLE | WS_CHILD | SS_CENTER,
-            320, 45, 40, 20, hPanel, NULL, hInst, NULL
+            WS_EX_STATICEDGE,         // borde más soft que CLIENTEDGE
+            L"STATIC", L"NS/NC",
+            WS_VISIBLE | WS_CHILD
+            | SS_CENTER
+            | SS_SUNKEN,            // sunken pero sin clientedge
+            320, 43, 40, 20,
+            hPanel,
+            HMENU(3004 + i * 10),
+            hInst, nullptr
         );
         SendMessage(hBtnChildSStatus, WM_SETFONT, WPARAM(hFont2), TRUE);
 
 
         yOffset += verticalSpacing;
-
+        //UpdateServerStatus(hParentPanel, i);
     }
 
     // Estimar el ancho total necesario para el scroll
@@ -279,7 +387,6 @@ void CrearPanelesConexiones(HWND hParentPanel) {
     InvalidateRect(hParentPanel, NULL, TRUE);
     UpdateWindow(hParentPanel);
 }
-
 //Función dedicada a editar una linea en un fichero, requiere el index de conexión y los datos del struct connection para añadirlos
 void ReplaceConnectionInFile(int index, const Connection& conn) {
     // 1) Leemos todas las líneas
@@ -317,24 +424,22 @@ void ReplaceConnectionInFile(int index, const Connection& conn) {
     CrearPanelesConexiones(hPanelConexiones);
 }
 
-// Una sola vez al arranque:
+// UTILIZADO PARA REGISTRAR LA RUTA DE PLINK
 static std::wstring g_plinkPath;
 void InitSSH() {
     g_plinkPath = std::wstring(rutaPrograma) + L"\\plink.exe";
 }
 
+// VALORES POR DEFECTO PARA LANZAR UN SSHCOMAND
 enum class SSHCommand {
     FREE = 0,
     START = 1,
     STOP = 2,
-    RESTART = 3
+    RESTART = 3,
+    STATUS = 4
 };
 
-struct SSHResult {
-    int exitCode;
-    std::wstring output;
-};
-
+//COMANDO PARA LANZAR UN SSH COMAND, REQUIERE LA ID DE CONEXIÓN, EL MODO CON SSHCommand::(MODO) Y SI ES FREECMD O NO
 SSHResult RunSSHCommand(
     int connIndex,
     SSHCommand mode,
@@ -356,99 +461,119 @@ SSHResult RunSSHCommand(
     std::wstring cmd;
     if (bOld) {
         // Comandos para servidores antiguos
-        const std::wstring cmdso[4] = {
-            freeCmd,
-            L"ls",
-            L"service sensors stop",
-            L"service sensors restart"
+        const std::wstring cmdso[5] = {
+            freeCmd,                                      // 0: FREE
+            L"/sbin/service sensors start 2>&1",          // 1: START
+            L"/sbin/service sensors stop 2>&1",           // 2: STOP
+            L"/sbin/service sensors restart 2>&1",        // 3: RESTART
+            L"/sbin/service sensors status 2>&1"          // 4: STATUS
         };
-        cmd = (im >= 1 && im <= 3) ? cmdso[im] : freeCmd;
+        // Ahora permitimos hasta 4
+        cmd = (im >= 1 && im <= 4) ? cmdso[im] : freeCmd;
     }
     else {
         // Comandos para servidores nuevos
-        const std::wstring cmds[4] = {
-            freeCmd,
-            L"systemctl sensors start",
-            L"systemctl sensors stop",
-            L"systemctl sensors restart"
+        const std::wstring cmds[5] = {
+            freeCmd,                                        // 0: FREE
+            L"/bin/systemctl sensors start 2>&1",           // 1
+            L"/bin/systemctl sensors stop 2>&1",            // 2
+            L"/bin/systemctl sensors restart 2>&1",         // 3
+            L"/bin/systemctl is-active sensors 2>&1"        // 4: STATUS
         };
-        cmd = (im >= 1 && im <= 3) ? cmds[im] : freeCmd;
+        cmd = (im >= 1 && im <= 4) ? cmds[im] : freeCmd;
     }
 
     // 4. Lambda para invocar plink
     auto invoke = [&](const std::wstring& opts) -> SSHResult {
-        // Construir línea de comando
-        std::wstringstream ss;
-        ss << L"\"" << g_plinkPath << L"\" -ssh -batch";
-        if (!opts.empty()) ss << opts;
-        ss << L" -pw \"" << pass << L"\" " << host;
-        if (!cmd.empty()) ss << L" \"" << cmd << L"\"";
+        // 1) Prepara línea de comando
+        std::wstringstream ssCmd;
+        ssCmd << L"\"" << g_plinkPath << L"\" -ssh -batch";
+        if (!opts.empty()) ssCmd << opts;
+        ssCmd << L" -pw \"" << pass << L"\" " << host;
+        if (!cmd.empty()) ssCmd << L" \"" << cmd << L"\"";
+        std::wstring line = ssCmd.str();
 
-        std::wstring line = ss.str();
-        OutputDebugStringW((L"Comando a ejecutar: " + line + L"\n").c_str());
-
-        // Crear pipe para capturar salida
+        // 2) Crear pipe
         SECURITY_ATTRIBUTES sa{ sizeof(sa), nullptr, TRUE };
         HANDLE rd = nullptr, wr = nullptr;
-        if (!CreatePipe(&rd, &wr, &sa, 0))
-            return { -1, L"ERROR: CreatePipe" };
+        if (!CreatePipe(&rd, &wr, &sa, 0)) {
+            return { -1, L"ERROR: CreatePipe", line };
+        }
         SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
 
-        // Configurar STARTUPINFO
+        // 3) Crear proceso
         PROCESS_INFORMATION pi{};
         STARTUPINFOW si{ sizeof(si) };
         si.dwFlags = STARTF_USESTDHANDLES;
         si.hStdOutput = si.hStdError = wr;
         si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
 
-        // Línea mutable para CreateProcessW
         std::vector<wchar_t> cmdLine(line.begin(), line.end());
         cmdLine.push_back(L'\0');
 
-        // Lanzar proceso
-        if (!CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr,
-            TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        if (!CreateProcessW(nullptr, cmdLine.data(),
+            nullptr, nullptr, TRUE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
         {
             DWORD err = GetLastError();
             CloseHandle(rd);
             CloseHandle(wr);
             std::wstringstream serr;
             serr << L"ERROR: plink (Windows error " << err << L")";
-            return { -1, serr.str() };
+            return { -1, serr.str(), line };
         }
 
-        // Cerrar extremo de escritura en padre
+        // 4) Cerrar wr en el padre
         CloseHandle(wr);
 
-        // Leer la salida
+        // 5) Leer la salida
         std::string utf8;
         char buffer[4096];
         DWORD bytesRead = 0;
-        while (ReadFile(rd, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
+        while (true) {
+            BOOL ok = ReadFile(rd, buffer, sizeof(buffer), &bytesRead, nullptr);
+            if (!ok) {
+                break;
+            }
+            if (bytesRead == 0) {
+                break;
+            }
             utf8.append(buffer, bytesRead);
         }
 
-        // Esperar a que termine
-        WaitForSingleObject(pi.hProcess, INFINITE);
+        // 6) Esperar finalización con timeout
+        DWORD wait = WaitForSingleObject(pi.hProcess, 8000);
+        if (wait == WAIT_TIMEOUT) {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+            CloseHandle(rd);
+            return { -3, L"ERROR: Timeout al ejecutar SSH", line };
+        }
+
+        // 7) Obtener código de salida
         DWORD exitCode = 0;
         GetExitCodeProcess(pi.hProcess, &exitCode);
 
-        // Cerrar handles restantes
+        // 8) Cerrar handles
         CloseHandle(rd);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
 
-        // Convertir salida a UTF-16
+        // 9) Convertir salida a UTF-16
         std::wstring output;
         if (!utf8.empty()) {
-            int wsize = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), nullptr, 0);
+            int wsize = MultiByteToWideChar(
+                CP_UTF8, 0, utf8.data(), (int)utf8.size(), nullptr, 0);
             if (wsize > 0) {
                 output.resize(wsize);
-                MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), &output[0], wsize);
+                MultiByteToWideChar(
+                    CP_UTF8, 0, utf8.data(), (int)utf8.size(),
+                    &output[0], wsize);
             }
         }
 
-        return { (int)exitCode, output };
+        return { (int)exitCode, output, line };
     };
 
     // 5. Obtener y guardar hostkey si falta
@@ -479,9 +604,16 @@ SSHResult RunSSHCommand(
 
     // 6. Ejecutar con hostkey guardada
     std::wstring opts = L" -hostkey \"" + conn.hostkey + L"\"";
-    return invoke(opts);
+    SSHResult res = invoke(opts);
+
+    //MANDAMOS AL LOG
+    LogSSHResult(L"ssh_resultado.log", cleanLog, conn, cmd, res);
+
+    // 9. Devolver resultado al llamador
+    return res; 
 }
 
+//Función para lanzar un comando a todos los servidores.
 bool GeneralSSHFunc(SSHCommand mode)
 {
     // 1) Cuenta conexiones
@@ -496,80 +628,67 @@ bool GeneralSSHFunc(SSHCommand mode)
     LoadStringW(hInst, IDS_STRING_OK, okTxt, _countof(okTxt));
     LoadStringW(hInst, IDS_STRING_ERR, errTxt, _countof(errTxt));
 
-    // 3) Ejecuta SSH en cada servidor (por índice) y construye el resumen
+    // 3) Ejecuta SSH en cada servidor y construye el resumen
     std::wstring resumen;
     bool anyError = false;
     for (int i = 0; i < total; ++i) {
-        // Llama a la función con el índice y el modo
         SSHResult r = RunSSHCommand(i, mode, L"");
+        if (cleanLog)
+            cleanLog = false;
 
-        // Recupera los datos para mostrar nombre en el resumen
         Connection c = GetConnectionFromFile(i);
-
         resumen += (r.exitCode == 0 ? okTxt : errTxt);
         anyError |= (r.exitCode != 0);
         resumen += c.nombre + L"\n"
             + L"  Exit: " + std::to_wstring(r.exitCode) + L"\n"
-            + L"  Out:  " + L"\n\n" + L"= = = = = = = DUMP = = = = = = =" + L"\n\n" + r.output + L"\n\n" + L"= = = = = = = FIN = = = = = = =" + L"\n\n" + L"\n\n";
+            + L"  Out:  \n\n"
+            + r.output + L"\n\n";
     }
 
-    // 4) Genera la ruta del log (wide)
-    std::wstring logPathW = rutaPrograma;
-    if (!logPathW.empty() && logPathW.back() != L'\\')
-        logPathW += L'\\';
-    logPathW += L"ssh_resultado.log";
-
-    // 5) Prepara UTF-8 del resumen
-    int utf8Len = WideCharToMultiByte(
-        CP_UTF8, 0,
-        resumen.data(), (int)resumen.size(),
-        nullptr, 0, nullptr, nullptr
-    );
-    std::string resumenUtf8(utf8Len, '\0');
-    WideCharToMultiByte(
-        CP_UTF8, 0,
-        resumen.data(), (int)resumen.size(),
-        &resumenUtf8[0], utf8Len, nullptr, nullptr
-    );
-
-    // 6) Convierte logPathW → narrow UTF-8 para std::ofstream
-    int pathLen = WideCharToMultiByte(
-        CP_UTF8, 0,
-        logPathW.data(), (int)logPathW.size(),
-        nullptr, 0, nullptr, nullptr
-    );
-    std::string logPath(pathLen, '\0');
-    WideCharToMultiByte(
-        CP_UTF8, 0,
-        logPathW.data(), (int)logPathW.size(),
-        &logPath[0], pathLen, nullptr, nullptr
-    );
-
-    // 7) Escribe en binario
-    std::ofstream ofs(logPath, std::ios::binary | std::ios::trunc);
-    if (!ofs) {
-        MessageBoxW(hWnd, L"No se pudo escribir ssh_resultado.log", L"Error", MB_OK | MB_ICONERROR);
-        // mostramos resumen en pantalla aunque falle el fichero
-        MessageBoxW(hWnd, resumen.c_str(), L"SSH Todos", MB_OK | MB_ICONERROR);
-        return false;
-    }
-    // BOM UTF-8
-    constexpr unsigned char bom[] = { 0xEF,0xBB,0xBF };
-    ofs.write(reinterpret_cast<const char*>(bom), sizeof(bom));
-    ofs.write(resumenUtf8.data(), resumenUtf8.size());
-    ofs.close();
-
-    // 7) Muestra resultado solo si hubo errores
+    // 4) Sólo muestra mensajes, YA NO ESCRIBE FICHERO
     if (anyError) {
         MessageBoxW(hWnd, resumen.c_str(), L"SSH Todos - Errores detectados", MB_OK | MB_ICONERROR);
         return false;
     }
     else {
-        MessageBoxW(hWnd, L"Todos los servidores respondieron correctamente.", L"SSH Todos", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(hWnd, resumen.c_str(), L"SSH Todos", MB_OK | MB_ICONINFORMATION);
         return true;
     }
 }
+//Dialogo de barra de progreso
+INT_PTR CALLBACK ProgressDlgProc(HWND dlg, UINT msg, WPARAM w, LPARAM l) {
+    if (msg == WM_INITDIALOG) {
+        hProgressBar = GetDlgItem(dlg, IDC_PROGRESS_BAR);
+        return TRUE;
+    }
+    return FALSE;
+}
 
+void UpdateServerStatus(HWND hParentPanel, int connIndex) {
+    // 1) Lanza SSH STATUS
+    SSHResult r = RunSSHCommand(connIndex, SSHCommand::STATUS, L"");
+    bool isRunning = (r.output.find(L"El servicio sensors est") != std::wstring::npos);
+
+    // 2) Obtiene el control STATIC por su ID
+    int statusId = 3004 + connIndex * 10;
+    HWND hStatus = GetDlgItem(hParentPanel, statusId);
+    if (!hStatus) return;
+
+    // 3) Cambia texto
+    SetWindowTextW(hStatus, isRunning ? L"ON" : L"OFF");
+
+    // 4) Cambia color (simplemente tintando fondo/tipo de letra)
+    //    Aquí un truco: guardamos el color en el user‐data y forzamos repintado.
+    SetWindowLongPtrW(hStatus, GWLP_USERDATA, isRunning ? 1 : 0);
+    InvalidateRect(hStatus, nullptr, TRUE);
+    UpdateWindow(hStatus);
+}
+
+struct FtpResult {
+    bool        ok;          // fue FtpPutFileW exitoso?
+    DWORD       errCode;     // GetLastError() si ok==false
+    std::wstring response;   // respuesta del servidor (o texto del error)
+};
 
 //----------------------------------------------------------------------
 // Hace login por FTP y sube un archivo local al servidor remoto
@@ -582,20 +701,6 @@ bool GeneralSSHFunc(SSHCommand mode)
 //   remoteFile: nombre (o ruta) destino en el servidor
 //----------------------------------------------------------------------
 
-//Dialogo de barra de progreso
-INT_PTR CALLBACK ProgressDlgProc(HWND dlg, UINT msg, WPARAM w, LPARAM l) {
-    if (msg == WM_INITDIALOG) {
-        hProgressBar = GetDlgItem(dlg, IDC_PROGRESS_BAR);
-        return TRUE;
-    }
-    return FALSE;
-}
-
-struct FtpResult {
-    bool        ok;          // fue FtpPutFileW exitoso?
-    DWORD       errCode;     // GetLastError() si ok==false
-    std::wstring response;   // respuesta del servidor (o texto del error)
-};
 FtpResult UploadFileFTP(
     const wchar_t* server,
     INTERNET_PORT   port,
@@ -616,6 +721,20 @@ FtpResult UploadFileFTP(
     WIN32_FILE_ATTRIBUTE_DATA fad;
     if (!GetFileAttributesExW(localFile, GetFileExInfoStandard, &fad)) {
         result.errCode = GetLastError();
+        DWORD dwErr = 0, dwLen = 0;
+        // Primera llamada para obtener la longitud
+        InternetGetLastResponseInfoW(&dwErr, nullptr, &dwLen);
+        if (dwLen) {
+            std::wstring buf;
+            buf.resize(dwLen);
+            // Segunda llamada para rellenar buf
+            if (InternetGetLastResponseInfoW(&dwErr, &buf[0], &dwLen) && dwLen) {
+                // Elimina posible '\0' final
+                if (!buf.empty() && buf.back() == L'\0')
+                    buf.pop_back();
+                result.response = buf;
+            }
+        }
         return result;
     }
     ULONGLONG totalBytes = (ULONGLONG(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
@@ -636,6 +755,20 @@ FtpResult UploadFileFTP(
         nullptr, nullptr, 0);
     if (!hInet) {
         result.errCode = GetLastError();
+        DWORD dwErr = 0, dwLen = 0;
+        // Primera llamada para obtener la longitud
+        InternetGetLastResponseInfoW(&dwErr, nullptr, &dwLen);
+        if (dwLen) {
+            std::wstring buf;
+            buf.resize(dwLen);
+            // Segunda llamada para rellenar buf
+            if (InternetGetLastResponseInfoW(&dwErr, &buf[0], &dwLen) && dwLen) {
+                // Elimina posible '\0' final
+                if (!buf.empty() && buf.back() == L'\0')
+                    buf.pop_back();
+                result.response = buf;
+            }
+        }
         DestroyWindow(hProgressDlg);
         return result;
     }
@@ -650,6 +783,20 @@ FtpResult UploadFileFTP(
     );
     if (!hFtp) {
         result.errCode = GetLastError();
+        DWORD dwErr = 0, dwLen = 0;
+        // Primera llamada para obtener la longitud
+        InternetGetLastResponseInfoW(&dwErr, nullptr, &dwLen);
+        if (dwLen) {
+            std::wstring buf;
+            buf.resize(dwLen);
+            // Segunda llamada para rellenar buf
+            if (InternetGetLastResponseInfoW(&dwErr, &buf[0], &dwLen) && dwLen) {
+                // Elimina posible '\0' final
+                if (!buf.empty() && buf.back() == L'\0')
+                    buf.pop_back();
+                result.response = buf;
+            }
+        }
         InternetCloseHandle(hInet);
         DestroyWindow(hProgressDlg);
         return result;
@@ -664,6 +811,20 @@ FtpResult UploadFileFTP(
     );
     if (!hFtpFile) {
         result.errCode = GetLastError();
+        DWORD dwErr = 0, dwLen = 0;
+        // Primera llamada para obtener la longitud
+        InternetGetLastResponseInfoW(&dwErr, nullptr, &dwLen);
+        if (dwLen) {
+            std::wstring buf;
+            buf.resize(dwLen);
+            // Segunda llamada para rellenar buf
+            if (InternetGetLastResponseInfoW(&dwErr, &buf[0], &dwLen) && dwLen) {
+                // Elimina posible '\0' final
+                if (!buf.empty() && buf.back() == L'\0')
+                    buf.pop_back();
+                result.response = buf;
+            }
+        }
         InternetCloseHandle(hFtp);
         InternetCloseHandle(hInet);
         DestroyWindow(hProgressDlg);
@@ -682,6 +843,20 @@ FtpResult UploadFileFTP(
     );
     if (hFile == INVALID_HANDLE_VALUE) {
         result.errCode = GetLastError();
+        DWORD dwErr = 0, dwLen = 0;
+        // Primera llamada para obtener la longitud
+        InternetGetLastResponseInfoW(&dwErr, nullptr, &dwLen);
+        if (dwLen) {
+            std::wstring buf;
+            buf.resize(dwLen);
+            // Segunda llamada para rellenar buf
+            if (InternetGetLastResponseInfoW(&dwErr, &buf[0], &dwLen) && dwLen) {
+                // Elimina posible '\0' final
+                if (!buf.empty() && buf.back() == L'\0')
+                    buf.pop_back();
+                result.response = buf;
+            }
+        }
         InternetCloseHandle(hFtpFile);
         InternetCloseHandle(hFtp);
         InternetCloseHandle(hInet);
@@ -701,8 +876,22 @@ FtpResult UploadFileFTP(
             if (!InternetWriteFile(hFtpFile, buffer, readBytes, &written)) {
                 allSent = false;
                 result.errCode = GetLastError();
-                // Recuperar respuesta FTP
                 DWORD dwErr = 0, dwLen = 0;
+                // Primera llamada para obtener la longitud
+                InternetGetLastResponseInfoW(&dwErr, nullptr, &dwLen);
+                if (dwLen) {
+                    std::wstring buf;
+                    buf.resize(dwLen);
+                    // Segunda llamada para rellenar buf
+                    if (InternetGetLastResponseInfoW(&dwErr, &buf[0], &dwLen) && dwLen) {
+                        // Elimina posible '\0' final
+                        if (!buf.empty() && buf.back() == L'\0')
+                            buf.pop_back();
+                        result.response = buf;
+                    }
+                }
+                // Recuperar respuesta FTP
+                dwErr = 0, dwLen = 0;
                 InternetGetLastResponseInfoW(&dwErr, nullptr, &dwLen);
                 if (dwLen) {
                     std::wstring buf;
@@ -874,9 +1063,6 @@ void EliminarLineaSeleccionada(HWND hComboBox, const wchar_t* rutaConfig) {
     MessageBox(NULL, L"Registro eliminado correctamente.", L"Éxito", MB_OK | MB_ICONINFORMATION);
 }
 
-//EDITAR UNA CONEXIÓN
-
-
 //Función para añadir los datos mandados al void
 
 // Cambia la firma para aceptar también el hostkey (por defecto vacío)
@@ -979,6 +1165,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,  //LO que se inicia antes de nad
     GetModuleFileName(NULL, rutaPrograma, MAX_PATH);
     PathRemoveFileSpec(rutaPrograma);
 
+    //Icono de upload
+    hIconUpload = (HICON)LoadImageW(
+        GetModuleHandle(nullptr),           // Módulo actual
+        MAKEINTRESOURCEW(IDI_UPLOAD),       // Tu ID
+        IMAGE_ICON,
+        24, 24,                             // Tamaño exacto que quieres
+        LR_DEFAULTCOLOR
+    );
+
     //Para la barra de progreso
     INITCOMMONCONTROLSEX icex = {};
     icex.dwSize = sizeof(icex);
@@ -1023,9 +1218,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,  //LO que se inicia antes de nad
 
 
 // Controlador de mensajes del cuadro Acerca de.
-
-
-
 
 INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -1106,9 +1298,16 @@ INT_PTR CALLBACK NewConection(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
             int idx = (data && data->editMode)
                 ? (data->connectionIndex, ReplaceConnectionInFile(data->connectionIndex, conn), data->connectionIndex)
                 : (AgregarNuevaConexion(nombre, host, user, pass, old, L""), ContarLineasConfig() - 1);
-
+            SSHResult result;
+            std::wstring dumplogOld = L"sensors: service desconocido";
             // 3) Lanza SSH FREE para capturar y grabar la huella automáticamente
-            RunSSHCommand(idx, SSHCommand::FREE, L"ls");
+            if (old)
+            {
+                result = RunSSHCommand(idx, SSHCommand::FREE, L"service sensors status 2>&1");
+            }
+            else {
+                result = RunSSHCommand(idx, SSHCommand::FREE, L"systemctl sensors status 2>&1");
+            }
 
             EndDialog(hDlg, IDOK);
             return (INT_PTR)TRUE;
@@ -1254,7 +1453,8 @@ INT_PTR CALLBACK ConfigProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
                 DialogBoxParam(hInst, MAKEINTRESOURCE(IDD_EDIT_MENU), hDlg, NewConection, (LPARAM)&data);
             }
             else {
-                MessageBox(hDlg, L"Selecciona una conexión para editar.", L"Error", MB_ICONERROR);
+                LoadStringW(hInst, IDS_STRING108, sMultiModal, MAX_LOADSTRING); //Se lo enchufo al multimodal y lo utilizo
+                MessageBox(hDlg, sMultiModal, L"Error", MB_ICONERROR);
             }
             break;
         }
@@ -1270,8 +1470,9 @@ INT_PTR CALLBACK ConfigProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
     }
     return (INT_PTR)FALSE;
 }
-
-
+//
+// = = = = = = = = = = MENU SUPERIOR = = = = = = = == = = = 
+//Menú del panel de Servidores
 LRESULT CALLBACK PanelScrollProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
     UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
     static int scrollPos = 0;
@@ -1342,6 +1543,117 @@ LRESULT CALLBACK PanelScrollProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     case WM_DESTROY:
         RemoveWindowSubclass(hwnd, PanelScrollProc, 1);
         break;
+    case WM_CTLCOLORSTATIC:
+    {
+        HDC  hdc = (HDC)wParam;
+        HWND ctrl = (HWND)lParam;
+        int  idx = (int)dwRefData;
+        int  statusId = 3004 + idx * 10;
+
+        if ((int)GetWindowLongPtrW(ctrl, GWLP_ID) == statusId) {
+            int flag = (int)GetWindowLongPtrW(ctrl, GWLP_USERDATA);
+            SetTextColor(hdc, flag
+                ? RGB(0, 160, 0)   // ON
+                : RGB(200, 0, 0)   // OFF
+            );
+
+            COLORREF backColor = RGB(240, 240, 240);
+            SetBkColor(hdc, backColor);
+            SetBkMode(hdc, OPAQUE);
+
+            static HBRUSH hbrGray = CreateSolidBrush(RGB(240, 240, 240));
+            return (INT_PTR)hbrGray;
+        }
+        break;
+    }
+    case WM_COMMAND:
+    {
+        int wmId = LOWORD(wParam);
+        int act = wmId % 10;            // 0=start,1=stop,2=restart,3=upload, 4 status
+        int idx = (wmId - 3000) / 10;   // ahora base 3000
+
+        if (idx >= 0 && idx < nContLineas) {
+            Connection con = GetConnectionFromFile(idx);
+            std::wstring srv = con.nombre;
+
+            switch (act) {
+            case 0://START
+                cleanLog = false;
+                RunSSHCommand(idx, SSHCommand::START, L"");
+                UpdateServerStatus(hwnd, idx);
+                break;
+            case 1://STOP
+                cleanLog = false;
+                RunSSHCommand(idx, SSHCommand::STOP, L"");
+                UpdateServerStatus(hwnd, idx);
+                break;
+            case 2://RESTART
+                cleanLog = false;
+                RunSSHCommand(idx, SSHCommand::RESTART, L"");
+                UpdateServerStatus(hwnd, idx);
+                break;
+            case 3: // UPLOAD
+            {
+                // 1) Seleccionar fichero local
+                wchar_t localPath[MAX_PATH] = {};
+                if (!SelectLocalFile(localPath, _countof(localPath))) {
+                    // Usuario canceló o error
+                    MessageBoxW(hwnd, L"No se seleccionó ningún fichero.", L"Upload", MB_OK | MB_ICONWARNING);
+                    break;
+                }
+
+                // 2) Definir nombre remoto (por ejemplo mismo nombre de fichero)
+                const wchar_t* remoteFile = wcsrchr(localPath, L'\\');
+                std::wstring remoteName = remoteFile ? (remoteFile + 1) : localPath;
+
+                // 3) Llamar a UploadFileFTP con los datos de la conexión
+                Connection c = GetConnectionFromFile(idx);
+                FtpResult ftp = UploadFileFTP(
+                    c.servidor.c_str(),                // servidor FTP
+                    INTERNET_DEFAULT_FTP_PORT,         // puerto (21)
+                    c.usuario.c_str(),                 // usuario
+                    c.contrasena.c_str(),              // contraseña
+                    localPath,                         // ruta local
+                    remoteName.c_str()                 // nombre destino
+                );
+
+                // 4) Mostrar resultado
+                if (ftp.ok) {
+                    MessageBoxW(hwnd, (L"Fichero subido correctamente:\n" + remoteName).c_str(),
+                        L"Upload", MB_OK | MB_ICONINFORMATION);
+                }
+                else {
+                    std::wstring err = L"Error al subir fichero. Código: " + std::to_wstring(ftp.errCode)
+                        + L"\n" + ftp.response;
+                    MessageBoxW(hwnd, err.c_str(), L"Upload Error", MB_OK | MB_ICONERROR);
+                }
+
+                // 5) También lo puedes loggear si quieres:
+                SSHResult dummyRes;
+                dummyRes.exitCode = ftp.ok ? 0 : (int)ftp.errCode;
+                dummyRes.output = ftp.response;
+                dummyRes.invokedCmdLine = localPath;  // o remoteName
+                cleanLog = true;
+                LogSSHResult(
+                    L"ssh_upload.log",
+                    cleanLog,
+                    c,
+                    localPath,    // registramos la ruta local elegida como “cmd”
+                    dummyRes
+                );
+                break;
+            }
+            case 4: //Status
+            {
+                break;
+            }
+            default:
+                MessageBoxW(hwnd, L"¿Como has llegado aquí?", L"Debug Button", MB_OK);
+                break;
+            }
+        }
+        break;
+    }
     }
 
     return DefSubclassProc(hwnd, msg, wParam, lParam);
@@ -1358,15 +1670,35 @@ LRESULT CALLBACK PanelControlesProc(
         case WM_COMMAND:
         {
             int wmId = LOWORD(wParam);
+
+            int act = wmId % 10;                  // 0=start,1=stop,2=restart,3=upload
+            int idx = (wmId - act) / 10 - 100;    // recuperamos i
+
+            if (idx >= 0 && idx < nContLineas) {
+                Connection c = GetConnectionFromFile(idx);
+                std::wstring srv = c.nombre;
+                std::wstring dbg;
+                switch (act) {
+                case 0: dbg = L"START: " + srv; break;
+                case 1: dbg = L"STOP: " + srv; break;
+                case 2: dbg = L"RESTART: " + srv; break;
+                case 3: dbg = L"UPLOAD: " + srv; break;
+                }
+                MessageBoxW(hWnd, dbg.c_str(), L"Debug Button", MB_OK);
+            }
+
             switch (wmId)
             {
             case IDC_MAIN_BUTTON_START:
+                cleanLog = true;
                 GeneralSSHFunc(SSHCommand::START);
                 break;
             case IDC_MAIN_BUTTON_STOP:
+                cleanLog = true;
                 GeneralSSHFunc(SSHCommand::STOP);
                 break;
             case IDC_MAIN_BUTTON_RESTART:
+                cleanLog = true;
                 GeneralSSHFunc(SSHCommand::RESTART);
                 break;
             case IDC_MAIN_BUTTON_UPLOAD:
@@ -1653,20 +1985,13 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     );
 
     hFont2 = CreateFontW(
-        16,                  // Altura de la fuente
-        0,                   // Ancho (0 ajusta automáticamente)
-        0,                   // Ángulo de inclinación
-        0,                   // Ángulo de orientación
-        FW_NORMAL,           // Grosor normal
-        0,                   // No es cursiva
-        0,                   // No subrayado
-        0,                   // No tachado
-        DEFAULT_CHARSET,     // Juego de caracteres predeterminado
-        OUT_DEFAULT_PRECIS,  // Precisión de salida
-        CLIP_DEFAULT_PRECIS, // Precisión de recorte
-        CLEARTYPE_QUALITY,   // Calidad de la fuente
-        DEFAULT_PITCH | FF_SWISS, // Estilo de fuente y familia
-        L"Berlin Sans FB Demi"          // Nombre de la fuente
+        -MulDiv(10, GetDeviceCaps(GetDC(nullptr), LOGPIXELSY), 80), // 10pt
+        0, 0, 0,
+        FW_BOLD,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        VARIABLE_PITCH, L"Segoe UI"
     );
 
     if (!hFont || !hFont2)
@@ -1813,7 +2138,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_COMMAND: // == ACCIONES DEL PANEL PRINCIPAL ==
     {
         int wmId = LOWORD(wParam);
-
         // Analizar las selecciones de menú:
         switch (wmId)
         {

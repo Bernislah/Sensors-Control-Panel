@@ -2,6 +2,9 @@
 // Archivo de inclusión generado de Microsoft Visual C++.
 // Usado por Sensors Control Panel.rc
 //
+
+extern HICON hIconUpload;
+
 #define IDC_MYICON                      2
 #define IDD_SENSORSCONTROLPANEL_DIALOG  102
 #define IDD_PROPPAGE_SMALL              102
@@ -16,7 +19,9 @@
 #define IDI_SENSORSCONTROLPANEL         107
 #define IDS_STRING_QUESTION             107
 #define IDI_SMALL                       108
+#define IDS_STRING108                   108
 #define IDC_SENSORSCONTROLPANEL         109
+#define IDI_UPLOAD						110
 #define IDR_MAINFRAME                   128
 #define IDM_CONFIG                      200
 #define IDD_MAIN_MENU                   300
@@ -24,6 +29,7 @@
 #define IDC_HELP_BUTTON                 302
 #define IDC_EXIT_BUTTON                 303
 #define IDD_PROGRESS_DLG                400
+#define IDD_CONEXION_PANEL              500
 #define IDC_LIST                        1001
 #define IDC_ConfigFile                  1001
 #define IDC_BUTTON1                     1002

@@ -133,7 +133,6 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
-    <ClInclude Include="libssh2_client.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="Sensors Control Panel.h" />
     <ClInclude Include="targetver.h" />
@@ -147,6 +146,7 @@
   <ItemGroup>
     <Image Include="Sensors Control Panel.ico" />
     <Image Include="small.ico" />
+    <Image Include="upload.ico" />
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="app.manifest" />
